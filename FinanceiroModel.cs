@@ -211,7 +211,6 @@ public class TransacaoFinanceira
         {
             ID = conn.Query<Int64>(@"
                 DECLARE @IDExiste BIGINT = NULL;
-                -- Tem banco desgraçado que traz o mesmo TUDO e é um lançamento diferente...
                  " + (checkIfExists ? "SELECT @IDExiste = ID FROM dbo.ExtratoBanco WHERE (@CodigoNoBanco IS NOT NULL AND CodBanco = @CodigoNoBanco AND IDPlanoConta = @IDPlanoContaAtivo) OR (@CodigoNoBanco IS NULL AND Dta = @Data AND Vlr = @Valor AND IDPlanoConta = @IDPlanoContaAtivo AND LOWER(Descri) = LOWER(@Descricao));" : "") + @"
                 
                 IF (@IDExiste IS NULL)
