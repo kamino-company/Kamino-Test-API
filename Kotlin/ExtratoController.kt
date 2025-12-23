@@ -1,69 +1,16 @@
 package com.kamino.banking.controller
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import com.kamino.banking.entity.*
 import com.kamino.banking.repository.*
 import com.kamino.banking.service.ExtratoService
+import com.kamino.banking.service.RetornoHelper
 import jakarta.persistence.EntityManager
 import org.slf4j.LoggerFactory
 import org.springframework.http.ResponseEntity
-import org.springframework.kafka.core.KafkaTemplate
 import org.springframework.web.bind.annotation.*
-import org.springframework.web.client.RestTemplate
 import java.math.BigDecimal
 import java.time.LocalDateTime
 import java.util.*
-
-// ==================== DTOs ====================
-
-data class ExtratoDTO(
-    var id: String? = null,
-    var externalId: String? = null,
-    var date: LocalDateTime? = null,
-    var status: String? = null,
-    var description: String? = null,
-    var type: String? = null,
-    var amount: BigDecimal? = null,
-    var finalCardNumber: String? = null,
-    var originId: UUID? = null
-) {
-    fun getStatusTranslated(): String {
-        return when (status) {
-            "PENDING" -> "Pendente"
-            "COMPLETED" -> "Concluído"
-            "CANCELLED" -> "Cancelado"
-            else -> status ?: ""
-        }
-    }
-}
-
-data class BalanceDTO(var balance: BigDecimal = BigDecimal.ZERO)
-
-data class PaginationDTO<T>(
-    var items: List<T> = ArrayList(),
-    var totalItems: Int = 0,
-    var totalPages: Int = 0,
-    var page: Int = 0
-)
-
-data class RetornoHelper(
-    var sucesso: Boolean = true,
-    var mensagem: String? = null,
-    var objeto: Any? = null
-)
-
-data class ConciliacaoRequest(
-    var idPlanoContaAtivo: String,
-    var transacoes: List<TransacaoConciliacaoDTO>
-)
-
-data class TransacaoConciliacaoDTO(
-    var id: Long,
-    var data: LocalDateTime,
-    var valor: BigDecimal,
-    var idMovimento: Int?,
-    var tipoMovimento: String?
-)
 
 // ==================== Controller ====================
 
@@ -73,7 +20,6 @@ data class TransacaoConciliacaoDTO(
 class ExtratoController(
     val extratoService: ExtratoService,
     val transacaoRepository: TransacaoFinanceiraRepository,
-    val contaPagarRepository: ContaPagarRepository,
     val entityManager: EntityManager
 ) {
     private val logger = LoggerFactory.getLogger(ExtratoController::class.java)
@@ -86,7 +32,7 @@ class ExtratoController(
         @RequestHeader("X-Company-Token") companyToken: String
     ): RetornoHelper {
         logger.info("Atualizando pagamentos por hook")
-        return extratoService.atualizarContasBancariasKamino(companyToken, forcar)
+        return extratoService.atualizarContasBancarias(companyToken, forcar)
     }
 
     @GetMapping("/transactions/pending")
@@ -128,32 +74,11 @@ class ExtratoController(
         return ResponseEntity.ok(transacoes)
     }
 
-    @PostMapping("/conciliacao")
-    fun salvarConciliacao(@RequestBody request: ConciliacaoRequest): RetornoHelper {
-        for (transacao in request.transacoes) {
-            val entity = transacaoRepository.findById(transacao.id).get()
-            entity.conciliado = true
-            entity.idConciliacaoBancaria = transacao.idMovimento
-            transacaoRepository.save(entity)
-        }
-        return RetornoHelper(sucesso = true, mensagem = "Conciliação salva com sucesso")
-    }
-
-    @GetMapping("/conta-pagar/{id}")
-    fun getContaPagar(@PathVariable id: Int): ResponseEntity<ContaPagar> {
-        val contaPagar = contaPagarRepository.findById(id)
-        return if (contaPagar.isPresent) {
-            ResponseEntity.ok(contaPagar.get())
-        } else {
-            ResponseEntity.notFound().build()
-        }
-    }
-
     @PostMapping("/contas/atualizar")
     fun atualizarContas(@RequestBody body: Map<String, Any>): RetornoHelper {
         val companyToken = body["companyToken"] as String
         val forcar = body["forcar"] as? Boolean ?: false
-        return extratoService.atualizarContasBancariasKamino(companyToken, forcar)
+        return extratoService.atualizarContasBancarias(companyToken, forcar)
     }
 
     @DeleteMapping("/cache/limpar")

@@ -24,8 +24,6 @@ class ExtratoService(
     val transacaoRepository: TransacaoFinanceiraRepository,
     val contaBancoRepository: ContaBancoRepository,
     val contaPagarRepository: ContaPagarRepository,
-    val boletoRepository: BoletoRepository,
-    val transferenciaRepository: TransferenciaRepository,
     val restTemplate: RestTemplate,
     val kafkaTemplate: KafkaTemplate<String, String>,
     val objectMapper: ObjectMapper
@@ -87,49 +85,41 @@ class ExtratoService(
         return null
     }
 
-    fun atualizarContasBancariasKamino(companyToken: String, forcar: Boolean = false): RetornoHelper {
+    fun atualizarContasBancarias(companyToken: String, forcar: Boolean = false): RetornoHelper {
         var reagendar = true
         try {
-            var contaBancos = contaBancoRepository.findContasKamino()
+            var contaBancos = contaBancoRepository.findContasIntegradas()
 
             if (contaBancos.isEmpty()) {
                 reagendar = false
                 return RetornoHelper(sucesso = true)
             }
 
-            logger.info("Atualizando ${contaBancos.size} contas bancarias kamino")
-
-            contaBancos = contaBancos.filter { it.idConfigAppExterno != null && it.idConfigAppExterno!! > 0 }
-
-            if (contaBancos.isEmpty()) {
-                reagendar = false
-                return RetornoHelper(sucesso = true)
-            }
+            logger.info("Atualizando ${contaBancos.size} contas bancarias")
 
             for (contaBanco in contaBancos) {
-                atualizarContaBancariaKamino(contaBanco, companyToken, forcar)
+                sincronizarConta(contaBanco, companyToken, forcar)
             }
 
             return RetornoHelper(sucesso = true)
         } catch (ex: Exception) {
-            agendarBrokerAtualizacaoContasKamino(companyToken)
-            logger.error("Erro ao atualizar extrato contas bancárias Kamino", ex)
-            return RetornoHelper(sucesso = false, mensagem = "Não foi possível atualizar as contas bancárias Kamino")
+            agendarSincronizacao(companyToken)
+            logger.error("Erro ao atualizar extrato contas bancárias", ex)
+            return RetornoHelper(sucesso = false, mensagem = "Não foi possível atualizar as contas bancárias")
         } finally {
             if (reagendar) {
-                agendarBrokerAtualizacaoContasKamino(companyToken)
+                agendarSincronizacao(companyToken)
             }
         }
     }
 
-    fun agendarBrokerAtualizacaoContasKamino(companyToken: String) {
+    fun agendarSincronizacao(companyToken: String) {
         try {
             val message = mapOf(
                 "companyToken" to companyToken,
                 "metodo" to "POST",
                 "endpoint" to "api/banking/kamino/transactions/reload/hook",
-                "dataHoraProgramacao" to LocalDateTime.now().plusMinutes(5).toString(),
-                "urlPrefix" to "https://kaminoback-bancos.azurewebsites.net/"
+                "dataHoraProgramacao" to LocalDateTime.now().plusMinutes(5).toString()
             )
             kafkaTemplate.send("broker-queue", objectMapper.writeValueAsString(message))
         } catch (ex: Exception) {
@@ -139,33 +129,21 @@ class ExtratoService(
 
     @Async
     @Transactional
-    fun atualizarContaBancariaKamino(contaBanco: ContaBanco, companyToken: String, forcar: Boolean = false): RetornoHelper {
-        logger.info("Iniciando atualização da conta bancaria kamino: ${contaBanco.id}")
+    fun sincronizarConta(contaBanco: ContaBanco, companyToken: String, forcar: Boolean = false): RetornoHelper {
+        logger.info("Iniciando atualização da conta bancaria: ${contaBanco.id}")
 
         val ultimaTransacao = transacaoRepository.findUltimaTransacao(contaBanco.id)
         
-        var dataInicio = ultimaTransacao?.data ?: LocalDateTime.of(2022, 1, 1, 0, 0)
+        var dataInicio = ultimaTransacao?.data ?: LocalDateTime.of(2023, 1, 1, 0, 0)
         dataInicio = dataInicio.minusDays(1)
-        if (forcar) dataInicio = LocalDateTime.of(2022, 1, 1, 0, 0)
+        if (forcar) dataInicio = LocalDateTime.of(2023, 1, 1, 0, 0)
 
         val transacoesExternas = buscarTransacoesAPI(contaBanco.id, dataInicio, LocalDateTime.now())
         logger.info("Transações obtidas da API: ${transacoesExternas.size}")
 
-        val transacoesConciliacao = mutableListOf<TransacaoFinanceira>()
-        
         for (transacaoExterna in transacoesExternas) {
             val transacao = converterParaEntidade(transacaoExterna, contaBanco)
             salvarTransacao(transacao)
-            
-            if (!transacao.conciliado && transacao.idTransacaoExterna != null) {
-                transacoesConciliacao.add(transacao)
-            }
-        }
-
-        logger.info("Transações não conciliadas: ${transacoesConciliacao.size}")
-
-        if (transacoesConciliacao.isNotEmpty()) {
-            conciliarAutomaticamente(transacoesConciliacao, contaBanco.idPlanoContaAtivo!!)
         }
 
         calcularSaldoDiario(contaBanco, dataInicio)
@@ -196,16 +174,12 @@ class ExtratoService(
         transacao.valor = BigDecimal(dados["amount"].toString())
         transacao.data = LocalDateTime.parse(dados["date"] as String)
         transacao.idContaBanco = contaBanco.id
-        transacao.idPlanoContaAtivo = contaBanco.idPlanoContaAtivo
         transacao.idTransacaoExterna = dados["externalId"]?.let { UUID.fromString(it as String) }
         return transacao
     }
 
     fun salvarTransacao(transacao: TransacaoFinanceira) {
-        val existente = transacaoRepository.findByCodigoNoBancoAndIdPlanoContaAtivo(
-            transacao.codigoNoBanco ?: "",
-            transacao.idPlanoContaAtivo ?: ""
-        )
+        val existente = transacaoRepository.findByCodigoNoBanco(transacao.codigoNoBanco ?: "")
         
         if (existente != null) {
             existente.descricao = transacao.descricao
@@ -214,93 +188,16 @@ class ExtratoService(
         } else {
             transacao.dataHoraInclusao = LocalDateTime.now()
             transacaoRepository.save(transacao)
-        }
-    }
 
-    fun conciliarAutomaticamente(transacoes: List<TransacaoFinanceira>, idPlanoConta: String): RetornoHelper {
-        logger.info("Iniciando conciliação automática: ${transacoes.size} transações")
-
-        for (transacao in transacoes) {
-            val movimento = obterMovimentoFinanceiro(transacao)
-            if (movimento != null) {
-                transacao.conciliado = true
-                transacao.idConciliacaoBancaria = movimento.id
-                transacaoRepository.save(transacao)
-                
-                atualizarMovimentoConciliado(movimento, transacao.id)
-            }
-        }
-
-        val message = mapOf(
-            "tipo" to "CONCILIACAO_AUTOMATICA",
-            "idPlanoConta" to idPlanoConta,
-            "quantidade" to transacoes.size,
-            "timestamp" to LocalDateTime.now().toString()
-        )
-        kafkaTemplate.send("conciliacao-events", objectMapper.writeValueAsString(message))
-
-        return RetornoHelper(sucesso = true, mensagem = "${transacoes.size} transações processadas")
-    }
-
-    private fun obterMovimentoFinanceiro(transacao: TransacaoFinanceira): MovimentoFinanceiro? {
-        val idExterno = transacao.idTransacaoExterna ?: return null
-
-        val contaPagar = contaPagarRepository.findByCodigoExterno(idExterno.toString())
-        if (contaPagar != null && contaPagar.idConciliacaoBancaria == null) {
-            return MovimentoFinanceiro(
-                id = contaPagar.id,
-                tipo = TipoMovimento.PAGAMENTO,
-                data = contaPagar.dataPagamento ?: LocalDateTime.now(),
-                valorRealizado = contaPagar.valorPagamento ?: BigDecimal.ZERO
-            )
-        }
-
-        val boleto = boletoRepository.findByCodigoBoletoKamino(idExterno.toString())
-        if (boleto != null && boleto.idConciliacaoBancaria == null) {
-            return MovimentoFinanceiro(
-                id = boleto.id,
-                tipo = TipoMovimento.RECEBIMENTO,
-                data = boleto.dataPagamento ?: LocalDateTime.now(),
-                valorRealizado = boleto.valorPago ?: BigDecimal.ZERO
-            )
-        }
-
-        val transferencia = transferenciaRepository.findByIdExterno(idExterno.toString())
-        if (transferencia != null && transferencia.idConciliacaoBancariaOrigem == null) {
-            return MovimentoFinanceiro(
-                id = transferencia.id,
-                tipo = TipoMovimento.TRANSFERENCIA,
-                data = transferencia.data,
-                valorRealizado = transferencia.valor,
-                idContaOrigem = transferencia.idContaOrigem,
-                idContaDestino = transferencia.idContaDestino
-            )
-        }
-
-        return null
-    }
-
-    private fun atualizarMovimentoConciliado(movimento: MovimentoFinanceiro, idExtratoBanco: Long) {
-        when (movimento.tipo) {
-            TipoMovimento.PAGAMENTO -> {
-                val contaPagar = contaPagarRepository.findById(movimento.id).orElse(null)
-                contaPagar?.let {
-                    it.idConciliacaoBancaria = idExtratoBanco.toInt()
-                    contaPagarRepository.save(it)
-                }
-            }
-            TipoMovimento.RECEBIMENTO -> {
-                val boleto = boletoRepository.findById(movimento.id).orElse(null)
-                boleto?.let {
-                    it.idConciliacaoBancaria = idExtratoBanco.toInt()
-                    boletoRepository.save(it)
-                }
-            }
-            TipoMovimento.TRANSFERENCIA -> {
-                val transferencia = transferenciaRepository.findById(movimento.id).orElse(null)
-                transferencia?.let {
-                    it.idConciliacaoBancariaOrigem = idExtratoBanco.toInt()
-                    transferenciaRepository.save(it)
+            // Feature: Auto-baixa de contas a pagar pelo valor exato
+            if (!transacao.positivo) {
+                val contas = contaPagarRepository.findPossivelPagamento(transacao.valor.abs())
+                if (contas.size == 1) {
+                    val conta = contas[0]
+                    conta.pago = true
+                    conta.dataPagamento = transacao.data
+                    contaPagarRepository.save(conta)
+                    logger.info("Conta ${conta.id} baixada automaticamente pela transação ${transacao.id}")
                 }
             }
         }
@@ -324,23 +221,8 @@ class ExtratoService(
     }
 }
 
-// ==================== DTOs internos ====================
-
 data class RetornoHelper(
     var sucesso: Boolean = true,
     var mensagem: String? = null,
     var objeto: Any? = null
 )
-
-data class MovimentoFinanceiro(
-    var id: Int = 0,
-    var tipo: TipoMovimento = TipoMovimento.PAGAMENTO,
-    var data: LocalDateTime = LocalDateTime.now(),
-    var valorRealizado: BigDecimal = BigDecimal.ZERO,
-    var idContaOrigem: String? = null,
-    var idContaDestino: String? = null
-)
-
-enum class TipoMovimento {
-    PAGAMENTO, RECEBIMENTO, TRANSFERENCIA
-}
