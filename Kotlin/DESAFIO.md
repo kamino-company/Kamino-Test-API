@@ -23,12 +23,12 @@ Você foi designado para fazer um **code review** antes de uma grande refatoraç
 
 Analise os arquivos do módulo e identifique:
 
-1. **Problemas de segurança** (SQL Injection, Exposição de dados)
-2. **Problemas de performance** (Uso de memória, N+1, Operações bloqueantes)
-3. **Violações de boas práticas** (Concurrency, Clean Code, Tratamento de erros)
+1. **Problemas de segurança** 
+2. **Problemas de performance**
+3. **Violações de boas práticas** 
 4. **Problemas específicos de Spring Boot/JPA**
 5. **Problemas com Kotlin idiomático**
-6. **Questões de arquitetura e design** (Acoplamento, Separação de responsabilidades)
+6. **Questões de arquitetura e design**
 
 Para cada problema identificado, indique:
 - **Onde** está o problema (arquivo e linha aproximada)
@@ -50,15 +50,3 @@ Kotlin/
 - **Tempo:** 20-30 minutos
 - Não é necessário corrigir o código, apenas identificar os problemas
 - Priorize os problemas mais críticos primeiro
-
-## Stack Tecnológica
-
-- Kotlin 1.9+
-- Spring Boot 3.2+
-- Spring Data JPA
-- PostgreSQL
-- Apache Kafka
-
----
-
-**Boa sorte!**
